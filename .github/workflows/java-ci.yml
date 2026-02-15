@@ -1,0 +1,88 @@
+# ============================================================================
+# GitHub Actions CI Pipeline for Java/Gradle
+# ============================================================================
+# Jenkins equivalent: This entire file replaces your Jenkinsfile
+# Key difference: YAML-based, runs on GitHub's infrastructure
+# ============================================================================
+
+# "name" → appears in the Actions tab UI
+name: Java CI
+
+# "on" → triggers (Jenkins equivalent: triggers { }, webhook, pollSCM)
+# This runs on every push to main AND on every pull request targeting main
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# "jobs" → Jenkins equivalent: stages { }
+# Each job runs on a fresh VM (unlike Jenkins where stages share a workspace)
+jobs:
+
+  # Job name — Jenkins equivalent: stage('Build and Test')
+  build:
+
+    # Runner — Jenkins equivalent: agent { label 'ubuntu' } or node('ubuntu')
+    # GitHub provides free hosted runners: ubuntu-latest, windows-latest, macos-latest
+    runs-on: ubuntu-latest
+
+    # Steps — Jenkins equivalent: steps { }
+    steps:
+
+      # Step 1: Checkout code
+      # Jenkins equivalent: checkout scm (happens automatically in Jenkins pipeline)
+      # "uses" calls a pre-built Action from GitHub Marketplace (like a Jenkins plugin)
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up JDK
+      # Jenkins equivalent: tool 'JDK17' or jdk installation in Jenkins Global Tool Config
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Step 3: Cache Gradle dependencies
+      # Jenkins equivalent: no direct equivalent (some use stash/unstash or shared volume)
+      # This saves ~/.gradle/caches between runs — speeds up builds significantly
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Step 4: Make gradlew executable
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Step 5: Build
+      # "run" executes shell commands — Jenkins equivalent: sh 'command'
+      - name: Build with Gradle
+        run: ./gradlew build
+
+      # Step 6: Run tests (already runs via 'build', but let's be explicit for test report)
+      - name: Run tests
+        run: ./gradlew test
+
+      # Step 7: Upload test results as artifact
+      # Jenkins equivalent: junit 'build/test-results/**/*.xml' + archiveArtifacts
+      # Artifacts persist after the workflow run — downloadable from the Actions tab
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()    # Upload even if tests fail — so you can see what broke
+        with:
+          name: test-results
+          path: build/reports/tests/test/
+
+      # Step 8: Upload build artifact (the JAR)
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-service-jar
+          path: build/libs/*.jar
