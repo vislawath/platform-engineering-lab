@@ -9,5 +9,11 @@ build/
 .vscode/
 *.swp
 
+# Internal docs (personal learning notes — not for repo)
+docs/internal/
+
+# Claude Code project context (local only)
+.claude/
+
 # OS
 .DS_Store

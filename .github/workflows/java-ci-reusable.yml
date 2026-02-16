@@ -1,0 +1,160 @@
+# ============================================================================
+# Reusable Workflow: Java CI Golden Path
+# ============================================================================
+# Jenkins equivalent: A shared library pipeline (vars/javaPipeline.groovy)
+# that any team calls instead of writing their own Jenkinsfile from scratch.
+#
+# What is a Reusable Workflow?
+# - A workflow that OTHER workflows can CALL (like a function call)
+# - Triggered by `workflow_call` (not push/PR — the CALLER handles triggers)
+# - The caller passes inputs and secrets, this workflow does the work
+# - Lives in a central repo, consumed by team repos across the org
+#
+# Jenkins Shared Library equivalent:
+#   // vars/javaPipeline.groovy (shared lib)
+#   def call(Map config) {
+#     pipeline {
+#       stages {
+#         stage('Build')  { steps { sh "./gradlew build" } }
+#         stage('Test')   { steps { sh "./gradlew test" } }
+#         stage('Docker') { steps { sh "docker build ..." } }
+#       }
+#     }
+#   }
+#
+#   // Jenkinsfile in team repo (consumer)
+#   @Library('platform-shared-lib') _
+#   javaPipeline(javaVersion: '17', artifactName: 'my-service')
+#
+# GitHub Actions equivalent of the above:
+#   Reusable Workflow (this file) = vars/javaPipeline.groovy
+#   Caller workflow (team's ci.yml) = Jenkinsfile with @Library
+#
+# ============================================================================
+# WHY THIS MATTERS FOR THE ZIONS ROLE:
+# As Platform Engineering Manager, you'll maintain golden path workflows
+# like this one. Dev teams get a full CI pipeline by writing ~10 lines.
+# You control quality, security, and standards centrally.
+# ============================================================================
+
+name: Java CI — Reusable Golden Path
+
+# "workflow_call" makes this workflow callable by other workflows
+# Jenkins equivalent: This is what makes it a shared library, not a standalone pipeline
+on:
+  workflow_call:
+
+    # Inputs — Jenkins equivalent: parameters in shared library call
+    inputs:
+      java-version:
+        description: 'JDK version'
+        type: string
+        required: false
+        default: '17'
+      artifact-name:
+        description: 'Name for the uploaded build artifact'
+        type: string
+        required: false
+        default: 'app-jar'
+      gradle-tasks:
+        description: 'Gradle tasks to run for the build step'
+        type: string
+        required: false
+        default: 'build'
+      run-tests:
+        description: 'Whether to run tests as a separate step'
+        type: boolean
+        required: false
+        default: true
+      upload-artifacts:
+        description: 'Whether to upload build artifacts and test results'
+        type: boolean
+        required: false
+        default: true
+
+    # Outputs — Jenkins equivalent: return values from shared library
+    # Callers can reference these: needs.build.outputs.artifact-name
+    outputs:
+      build-version:
+        description: 'The version from the Gradle build'
+        value: ${{ jobs.build.outputs.build-version }}
+
+jobs:
+
+  # ── Job 1: Build and Test ───────────────────────────────────────────────
+  # Jenkins equivalent: stage('Build and Test') in shared pipeline
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    # Outputs from this job — accessible to callers via workflow outputs above
+    outputs:
+      build-version: ${{ steps.version.outputs.version }}
+
+    steps:
+
+      # Checkout the CALLER's code (not this repo)
+      # When a reusable workflow runs, `actions/checkout` checks out the
+      # caller's repo by default — exactly what we want
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Use our composite action for Java setup
+      # "uses: ./" would look in the CALLER repo — but we want this repo's action.
+      # For cross-repo composite actions, we reference the full path:
+      #   uses: org/repo/.github/actions/setup-java-env@main
+      # But since this reusable workflow runs in the context of the caller,
+      # we set up Java directly here (the composite action is for local use).
+      - name: Set up JDK ${{ inputs.java-version }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Build — Jenkins equivalent: sh "./gradlew ${params.gradleTasks}"
+      - name: Build with Gradle
+        run: ./gradlew ${{ inputs.gradle-tasks }}
+
+      # Tests — Jenkins equivalent: stage('Test') { steps { sh "./gradlew test" } }
+      - name: Run tests
+        if: ${{ inputs.run-tests }}
+        run: ./gradlew test
+
+      # Extract version for downstream use
+      # Jenkins equivalent: script { env.BUILD_VERSION = sh(returnStdout: true, script: '...') }
+      - name: Extract build version
+        id: version
+        run: |
+          VERSION=$(grep '^version' build.gradle | sed "s/version = '//;s/'//")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Build version: ${VERSION}"
+
+      # Upload test results — Jenkins equivalent: junit + archiveArtifacts
+      - name: Upload test results
+        if: ${{ inputs.upload-artifacts && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/reports/tests/test/
+          if-no-files-found: ignore
+
+      # Upload JAR — Jenkins equivalent: archiveArtifacts artifacts: 'build/libs/*.jar'
+      - name: Upload build artifact
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: build/libs/*.jar

@@ -1,0 +1,62 @@
+# ============================================================================
+# Composite Action: Setup Java Environment
+# ============================================================================
+# Jenkins equivalent: A shared library function that sets up JDK + build tool + cache
+#
+# What is a Composite Action?
+# - A reusable GROUP of steps packaged as a single action
+# - Like extracting a common method in code — DRY principle for CI
+# - Lives in a repo, called with `uses:` just like marketplace actions
+# - Different from Reusable Workflows: actions are STEPS, workflows are JOBS
+#
+# Composite Action vs Reusable Workflow:
+#   Composite Action  → reusable STEPS (runs inside a job)
+#   Reusable Workflow → reusable JOBS  (runs as a separate job)
+#
+# Why this exists:
+# Every Java service needs JDK + Gradle + cache. Instead of copy-pasting
+# these 3 steps into every workflow, teams call this one action.
+# ============================================================================
+
+name: 'Setup Java Environment'
+description: 'Sets up JDK, Gradle wrapper, and dependency cache for Java builds'
+
+# Inputs — Jenkins equivalent: parameters in a shared library function
+inputs:
+  java-version:
+    description: 'JDK version to install'
+    required: false
+    default: '17'
+  distribution:
+    description: 'JDK distribution (temurin, corretto, zulu, etc.)'
+    required: false
+    default: 'temurin'
+
+# Composite actions use `runs.using: composite` and define steps
+runs:
+  using: 'composite'
+  steps:
+
+    # Step 1: Install JDK
+    - name: Set up JDK ${{ inputs.java-version }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}
+
+    # Step 2: Cache Gradle dependencies
+    # Saves ~/.gradle between runs — cuts build time significantly
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    # Step 3: Make Gradle wrapper executable
+    - name: Grant execute permission for gradlew
+      shell: bash
+      run: chmod +x gradlew
