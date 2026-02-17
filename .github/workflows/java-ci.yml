@@ -9,12 +9,12 @@
 name: Java CI
 
 # "on" → triggers (Jenkins equivalent: triggers { }, webhook, pollSCM)
-# This runs on every push to main AND on every pull request targeting main
+# This runs on every push to main/develop AND on every pull request targeting them
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
 
 # "jobs" → Jenkins equivalent: stages { }
 # Each job runs on a fresh VM (unlike Jenkins where stages share a workspace)

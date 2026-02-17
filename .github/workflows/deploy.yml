@@ -1,34 +1,41 @@
 # ============================================================================
-# Deployment Pipeline with Environment Promotion
+# Deployment Pipeline — Hybrid Model (Model C)
 # ============================================================================
-# Jenkins equivalent: A multistage pipeline with input gates:
+# Branching Strategy (same as NICE):
 #
+#   feature/xyz ──PR──► develop ──PR──► main
+#                          │               │
+#                          ▼               ▼
+#                       dev env      staging → prod
+#                       (auto)       (auto)   (approval gate)
+#
+# Developer Workflow:
+#   1. Create feature branch from develop
+#   2. PR to develop → CI + deploy to dev (automatic)
+#   3. Test in dev environment
+#   4. PR from develop to main → CI + deploy to staging (automatic)
+#   5. Verify in staging → approve → deploy to prod
+#
+# Jenkins equivalent:
 #   pipeline {
 #     stages {
 #       stage('Build')          { ... }
-#       stage('Deploy Dev')     { ... }
-#       stage('Deploy Staging') { ... }
+#       stage('Deploy Dev')     { when { branch 'develop' } }
+#       stage('Deploy Staging') { when { branch 'main' } }
 #       stage('Deploy Prod')    {
+#         when { branch 'main' }
 #         input message: 'Deploy to production?', submitter: 'manager'
-#         steps { ... }
 #       }
 #     }
 #   }
 #
-# How this works:
-#   1. Build job runs first (calls our reusable workflow)
-#   2. deploy-dev runs automatically after build succeeds
-#   3. deploy-staging runs automatically after dev succeeds
-#   4. deploy-prod PAUSES — waits for manual approval in GitHub UI
-#   5. After approval + wait timer → prod deploys
-#
+# ============================================================================
 # The `environment:` keyword on a job:
 #   - Links the job to a GitHub Environment (Settings → Environments)
 #   - Applies that environment's protection rules (reviewers, timers)
 #   - Gives the job access to that environment's secrets
 #   - Records the deployment in the environment's history
 #
-# ============================================================================
 # BANKING CONTEXT: In regulated environments like Zions, prod approval
 # gates are mandatory. GitHub Environments provide the audit trail:
 # who approved, when, what SHA was deployed.
@@ -36,57 +43,57 @@
 
 name: Deploy Pipeline
 
-# Trigger: only on push to main (not PRs — PRs only run CI)
-# Jenkins equivalent: when { branch 'main' }
+# Triggers on push to develop OR main
+# PRs only run CI (java-ci.yml) — deploy only happens after merge
 on:
   push:
-    branches: [ main ]
+    branches: [ develop, main ]
 
-  # workflow_dispatch allows manual triggering from the Actions tab UI
-  # Jenkins equivalent: parameterized build / "Build Now" button
+  # Manual trigger — useful for re-deploying a specific commit
+  # Jenkins equivalent: "Build Now" / parameterized build
   workflow_dispatch:
 
 jobs:
 
-  # ── Job 1: Build ─────────────────────────────────────────────────────────
+  # ── Job 1: Build (always runs) ──────────────────────────────────────────
   # Calls the reusable workflow from Project 1B
-  # Jenkins equivalent: stage('Build') calling shared library
+  # Same build regardless of branch — ensures identical artifact
   build:
     uses: vislawath/platform-engineering-lab/.github/workflows/java-ci-reusable.yml@main
     with:
       java-version: '17'
       artifact-name: 'demo-service'
 
-  # ── Job 2: Deploy to Dev ─────────────────────────────────────────────────
-  # Jenkins equivalent: stage('Deploy Dev') { steps { ... } }
-  # No approval needed — auto-deploys after build succeeds
+  # ── Job 2: Deploy to Dev ────────────────────────────────────────────────
+  # ONLY runs on develop branch
+  # Jenkins equivalent: stage('Deploy Dev') { when { branch 'develop' } }
+  #
+  # This is where developers verify their changes work in a real
+  # environment before creating a PR to main.
   deploy-dev:
     name: Deploy to Dev
-    needs: build                        # ← waits for build to complete
+    needs: build
+    if: github.ref == 'refs/heads/develop'    # ← only on develop branch
     runs-on: ubuntu-latest
-    environment: dev                    # ← links to "dev" environment
-                                        #    no protection rules = auto-deploy
+    environment: dev                           # ← links to "dev" environment
+                                               #    no approval = auto-deploy
 
     steps:
-      # Download the JAR from the build job
+      # Download the JAR built in the build job
       # Jenkins equivalent: copyArtifacts from upstream build
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
           name: demo-service
 
-      - name: List artifacts
-        run: ls -la *.jar
-
-      # Simulate deployment — in real life this would be:
-      #   kubectl apply -f k8s/ --context dev-cluster
-      # or: helm upgrade --install my-app ./charts --values values-dev.yaml
+      # Simulated deployment — replace with real kubectl/helm in production
       - name: Deploy to dev
         run: |
           echo "========================================="
           echo "  DEPLOYING TO DEV ENVIRONMENT"
           echo "========================================="
           echo "Artifact: $(ls *.jar)"
+          echo "Branch: develop"
           echo "Environment: dev"
           echo "Timestamp: $(date -u)"
           echo "Commit: ${{ github.sha }}"
@@ -98,14 +105,19 @@ jobs:
           echo "  DEV DEPLOYMENT COMPLETE"
           echo "========================================="
 
-  # ── Job 3: Deploy to Staging ─────────────────────────────────────────────
-  # Jenkins equivalent: stage('Deploy Staging') { steps { ... } }
-  # No approval needed — auto-deploys after dev succeeds
+  # ── Job 3: Deploy to Staging ────────────────────────────────────────────
+  # ONLY runs on main branch (after PR from develop is merged)
+  # Jenkins equivalent: stage('Deploy Staging') { when { branch 'main' } }
+  #
+  # Staging is an auto-deploy — the PR review process is the gate.
+  # If you merged to main, it means the code was reviewed and
+  # tested in dev. Staging verifies it works in a prod-like setup.
   deploy-staging:
     name: Deploy to Staging
-    needs: deploy-dev                   # ← waits for dev to complete
+    needs: build
+    if: github.ref == 'refs/heads/main'       # ← only on main branch
     runs-on: ubuntu-latest
-    environment: staging                # ← links to "staging" environment
+    environment: staging                       # ← links to "staging" environment
 
     steps:
       - name: Download build artifact
@@ -119,6 +131,7 @@ jobs:
           echo "  DEPLOYING TO STAGING ENVIRONMENT"
           echo "========================================="
           echo "Artifact: $(ls *.jar)"
+          echo "Branch: main"
           echo "Environment: staging"
           echo "Timestamp: $(date -u)"
           echo "Commit: ${{ github.sha }}"
@@ -130,26 +143,31 @@ jobs:
           echo "  STAGING DEPLOYMENT COMPLETE"
           echo "========================================="
 
-  # ── Job 4: Deploy to Prod ────────────────────────────────────────────────
+  # ── Job 4: Deploy to Prod ───────────────────────────────────────────────
+  # ONLY runs on main branch, AFTER staging succeeds
+  # REQUIRES MANUAL APPROVAL — this is the key banking control
+  #
   # Jenkins equivalent:
   #   stage('Deploy Prod') {
+  #     when { branch 'main' }
   #     input message: 'Deploy to production?', submitter: 'manager,lead'
   #     steps { ... }
   #   }
   #
-  # THIS IS THE KEY PART: The `environment: prod` triggers the approval gate.
-  # GitHub will:
-  #   1. Pause this job
-  #   2. Show "Review deployments" button in the Actions UI
-  #   3. Notify the required reviewers (vislawath)
-  #   4. Wait for approval
-  #   5. After approval, wait 1 minute (wait timer)
-  #   6. Then run the deployment steps
+  # What happens:
+  #   1. Staging deploy completes
+  #   2. This job enters "waiting" state
+  #   3. GitHub notifies required reviewers (configured in Settings → Environments → prod)
+  #   4. Reviewer sees "Review deployments" button in Actions UI
+  #   5. Reviewer clicks "Approve" (or "Reject")
+  #   6. After approval, 1-minute wait timer counts down
+  #   7. Then deployment steps execute
   deploy-prod:
     name: Deploy to Prod
-    needs: deploy-staging               # ← waits for staging to complete
+    needs: deploy-staging                      # ← waits for staging
+    if: github.ref == 'refs/heads/main'        # ← only on main branch
     runs-on: ubuntu-latest
-    environment: prod                   # ← triggers approval gate!
+    environment: prod                          # ← TRIGGERS APPROVAL GATE
 
     steps:
       - name: Download build artifact
@@ -163,6 +181,7 @@ jobs:
           echo "  DEPLOYING TO PRODUCTION"
           echo "========================================="
           echo "Artifact: $(ls *.jar)"
+          echo "Branch: main"
           echo "Environment: prod"
           echo "Timestamp: $(date -u)"
           echo "Commit: ${{ github.sha }}"
