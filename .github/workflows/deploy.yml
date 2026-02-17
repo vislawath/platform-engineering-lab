@@ -1,0 +1,176 @@
+# ============================================================================
+# Deployment Pipeline with Environment Promotion
+# ============================================================================
+# Jenkins equivalent: A multistage pipeline with input gates:
+#
+#   pipeline {
+#     stages {
+#       stage('Build')          { ... }
+#       stage('Deploy Dev')     { ... }
+#       stage('Deploy Staging') { ... }
+#       stage('Deploy Prod')    {
+#         input message: 'Deploy to production?', submitter: 'manager'
+#         steps { ... }
+#       }
+#     }
+#   }
+#
+# How this works:
+#   1. Build job runs first (calls our reusable workflow)
+#   2. deploy-dev runs automatically after build succeeds
+#   3. deploy-staging runs automatically after dev succeeds
+#   4. deploy-prod PAUSES — waits for manual approval in GitHub UI
+#   5. After approval + wait timer → prod deploys
+#
+# The `environment:` keyword on a job:
+#   - Links the job to a GitHub Environment (Settings → Environments)
+#   - Applies that environment's protection rules (reviewers, timers)
+#   - Gives the job access to that environment's secrets
+#   - Records the deployment in the environment's history
+#
+# ============================================================================
+# BANKING CONTEXT: In regulated environments like Zions, prod approval
+# gates are mandatory. GitHub Environments provide the audit trail:
+# who approved, when, what SHA was deployed.
+# ============================================================================
+
+name: Deploy Pipeline
+
+# Trigger: only on push to main (not PRs — PRs only run CI)
+# Jenkins equivalent: when { branch 'main' }
+on:
+  push:
+    branches: [ main ]
+
+  # workflow_dispatch allows manual triggering from the Actions tab UI
+  # Jenkins equivalent: parameterized build / "Build Now" button
+  workflow_dispatch:
+
+jobs:
+
+  # ── Job 1: Build ─────────────────────────────────────────────────────────
+  # Calls the reusable workflow from Project 1B
+  # Jenkins equivalent: stage('Build') calling shared library
+  build:
+    uses: vislawath/platform-engineering-lab/.github/workflows/java-ci-reusable.yml@main
+    with:
+      java-version: '17'
+      artifact-name: 'demo-service'
+
+  # ── Job 2: Deploy to Dev ─────────────────────────────────────────────────
+  # Jenkins equivalent: stage('Deploy Dev') { steps { ... } }
+  # No approval needed — auto-deploys after build succeeds
+  deploy-dev:
+    name: Deploy to Dev
+    needs: build                        # ← waits for build to complete
+    runs-on: ubuntu-latest
+    environment: dev                    # ← links to "dev" environment
+                                        #    no protection rules = auto-deploy
+
+    steps:
+      # Download the JAR from the build job
+      # Jenkins equivalent: copyArtifacts from upstream build
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-service
+
+      - name: List artifacts
+        run: ls -la *.jar
+
+      # Simulate deployment — in real life this would be:
+      #   kubectl apply -f k8s/ --context dev-cluster
+      # or: helm upgrade --install my-app ./charts --values values-dev.yaml
+      - name: Deploy to dev
+        run: |
+          echo "========================================="
+          echo "  DEPLOYING TO DEV ENVIRONMENT"
+          echo "========================================="
+          echo "Artifact: $(ls *.jar)"
+          echo "Environment: dev"
+          echo "Timestamp: $(date -u)"
+          echo "Commit: ${{ github.sha }}"
+          echo ""
+          echo "In production, this step would run:"
+          echo "  kubectl apply -f k8s/ --namespace dev"
+          echo "  or: helm upgrade my-app ./charts -f values-dev.yaml"
+          echo "========================================="
+          echo "  DEV DEPLOYMENT COMPLETE"
+          echo "========================================="
+
+  # ── Job 3: Deploy to Staging ─────────────────────────────────────────────
+  # Jenkins equivalent: stage('Deploy Staging') { steps { ... } }
+  # No approval needed — auto-deploys after dev succeeds
+  deploy-staging:
+    name: Deploy to Staging
+    needs: deploy-dev                   # ← waits for dev to complete
+    runs-on: ubuntu-latest
+    environment: staging                # ← links to "staging" environment
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-service
+
+      - name: Deploy to staging
+        run: |
+          echo "========================================="
+          echo "  DEPLOYING TO STAGING ENVIRONMENT"
+          echo "========================================="
+          echo "Artifact: $(ls *.jar)"
+          echo "Environment: staging"
+          echo "Timestamp: $(date -u)"
+          echo "Commit: ${{ github.sha }}"
+          echo ""
+          echo "In production, this step would run:"
+          echo "  kubectl apply -f k8s/ --namespace staging"
+          echo "  or: helm upgrade my-app ./charts -f values-staging.yaml"
+          echo "========================================="
+          echo "  STAGING DEPLOYMENT COMPLETE"
+          echo "========================================="
+
+  # ── Job 4: Deploy to Prod ────────────────────────────────────────────────
+  # Jenkins equivalent:
+  #   stage('Deploy Prod') {
+  #     input message: 'Deploy to production?', submitter: 'manager,lead'
+  #     steps { ... }
+  #   }
+  #
+  # THIS IS THE KEY PART: The `environment: prod` triggers the approval gate.
+  # GitHub will:
+  #   1. Pause this job
+  #   2. Show "Review deployments" button in the Actions UI
+  #   3. Notify the required reviewers (vislawath)
+  #   4. Wait for approval
+  #   5. After approval, wait 1 minute (wait timer)
+  #   6. Then run the deployment steps
+  deploy-prod:
+    name: Deploy to Prod
+    needs: deploy-staging               # ← waits for staging to complete
+    runs-on: ubuntu-latest
+    environment: prod                   # ← triggers approval gate!
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-service
+
+      - name: Deploy to prod
+        run: |
+          echo "========================================="
+          echo "  DEPLOYING TO PRODUCTION"
+          echo "========================================="
+          echo "Artifact: $(ls *.jar)"
+          echo "Environment: prod"
+          echo "Timestamp: $(date -u)"
+          echo "Commit: ${{ github.sha }}"
+          echo "Approved by: (see environment deployment log)"
+          echo ""
+          echo "In production, this step would run:"
+          echo "  kubectl apply -f k8s/ --namespace prod"
+          echo "  or: helm upgrade my-app ./charts -f values-prod.yaml"
+          echo "========================================="
+          echo "  PRODUCTION DEPLOYMENT COMPLETE"
+          echo "========================================="
