@@ -1,0 +1,21 @@
+# Terraform state (contains sensitive info — never commit)
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+
+# Terraform provider cache (downloaded binaries — large files)
+.terraform/
+
+# Terraform lock file (DO commit this — ensures consistent provider versions)
+# !.terraform.lock.hcl  ← uncomment to track lock files
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Variable override files (may contain secrets)
+*.tfvars
+!example.tfvars
+
+# Plan output files
+*.tfplan
